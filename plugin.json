@@ -1,0 +1,104 @@
+{
+  "schema": "stitch.plugin/v2",
+  "id": "stitch-plugin-template",
+  "name": "Stitch Plugin Template",
+  "version": "0.1.0",
+  "service": "stitch-plugin-template",
+  "kind": "service",
+  "engine": {
+    "min": "0.3.0",
+    "api": 2
+  },
+  "depends": [],
+  "entry": {
+    "module": "stitch_plugin_template"
+  },
+  "capabilities": [],
+  "outputs": [],
+  "signature": "",
+  "generated_by": {
+    "tool": "stitch_plugin_tools",
+    "scaffold": 3
+  },
+  "contributions": {
+    "commands": [
+      {
+        "name": "health_check",
+        "readonly": true
+      },
+      {
+        "name": "echo",
+        "readonly": true
+      }
+    ],
+    "ui": {
+      "kind": "declarative",
+      "tabs": [
+        {
+          "id": "stitch-plugin-template",
+          "label": "stitch-plugin-template.tab",
+          "icon": "Plug",
+          "page": "main"
+        }
+      ],
+      "page": {
+        "title": "stitch-plugin-template.title",
+        "nodes": [
+          {
+            "kind": "button",
+            "id": "health-check-btn",
+            "label": "stitch-plugin-template.health_check",
+            "command": "health_check",
+            "variant": "primary"
+          },
+          {
+            "kind": "field",
+            "field": "text",
+            "id": "echo-field",
+            "label": "stitch-plugin-template.echo.text"
+          },
+          {
+            "kind": "button",
+            "id": "echo-btn",
+            "label": "stitch-plugin-template.echo.btn",
+            "command": "echo",
+            "params": {
+              "text": {
+                "field": "echo-field"
+              }
+            },
+            "variant": "secondary"
+          }
+        ]
+      }
+    },
+    "i18n": {
+      "ru": {
+        "stitch-plugin-template": {
+          "title": "Stitch Plugin Template",
+          "tab": "Stitch Plugin Template",
+          "health_check": "Health Check",
+          "echo": {
+            "text": "Text to echo",
+            "btn": "Echo"
+          }
+        }
+      },
+      "en": {
+        "stitch-plugin-template": {
+          "title": "Stitch Plugin Template",
+          "tab": "Stitch Plugin Template",
+          "health_check": "Health Check",
+          "echo": {
+            "text": "Text to echo",
+            "btn": "Echo"
+          }
+        }
+      }
+    },
+    "storage": {
+      "sqlite": true,
+      "migrations": "raw_sql"
+    }
+  }
+}
