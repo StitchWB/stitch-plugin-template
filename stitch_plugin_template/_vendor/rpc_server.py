@@ -1,12 +1,14 @@
 # _vendored_from: autoreg/plugin/rpc.py — do not edit; regenerate via stitch_plugin_tools dev-install
 
 from __future__ import annotations
+_VENDOR_SOURCE_SHA256 = "5de83ec0299c8dad805477f7429c9a10c196773192756df77eb1fdb7dd016dc1"
 
 import json
 import sys
 import threading
 import time
 from typing import Any
+
 
 
 _JSONRPC = "2.0"
@@ -182,6 +184,42 @@ class RpcPluginServer:
             f"call_host {method} (id={rid}) timed out after {timeout}s"
         )
 
+    def log(self, level: str, message: str, **extra: Any) -> None:
+        """Write a structured log entry to stdout as a ``plugin.log`` notification.
+
+        Emits a JSON-RPC 2.0 notification (no ``id``) with method
+        ``plugin.log`` and params ``{level, message, timestamp, ...extra}``.
+        The host's :class:`RpcPluginClient` reader thread picks it up and
+        pushes it into the structured log ring buffer — no response is
+        expected or sent.
+
+        ``level`` is a free-form string (conventionally ``debug``,
+        ``info``, ``warning``, ``error``).  ``extra`` key-value pairs are
+        merged into the params dict (e.g. ``server.log("info", "synced",
+        count=3)`` → params include ``"count": 3``).
+
+        The timestamp is an ISO 8601 UTC string.  Uses a LOCAL import of
+        ``datetime`` + ``UTC`` so the vendored copy (which only ships
+        ``json``, ``sys``, ``threading``, ``time``, ``typing`` at module
+        level) remains self-contained — the earlier code referenced the
+        module-level ``UTC`` alias, which the vendored header does NOT
+        import and thus raised ``NameError`` in standalone plugins.
+        """
+        from datetime import UTC, datetime
+
+        params: dict[str, Any] = {
+            "level": level,
+            "message": message,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        params.update(extra)
+        line = json.dumps(
+            {"jsonrpc": _JSONRPC, "method": "plugin.log", "params": params},
+            ensure_ascii=False,
+        )
+        sys.stdout.write(line + "\n")
+        sys.stdout.flush()
+
     def serve(self) -> None:
         """Main read-dispatch-write loop.  Exits on ``plugin.shutdown``.
 
@@ -190,7 +228,21 @@ class RpcPluginServer:
         internal buffering swallowing lines.  Before reading the next
         line, any lines queued by ``call_host`` (host→plugin requests
         that arrived while waiting for a host response) are processed.
+
+        Stdin/stdout are reconfigured to UTF-8 first: on Windows they
+        default to the console codepage (cp1251 etc.), where the first
+        non-ASCII response or request param kills the child with a
+        UnicodeEncodeError/UnicodeDecodeError while the host-side pipe
+        speaks UTF-8 anyway.
         """
+        for stream in (sys.stdin, sys.stdout):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if reconfigure is None:
+                continue
+            try:
+                reconfigure(encoding="utf-8")
+            except (OSError, ValueError):
+                pass
         while True:
             # Process lines queued by call_host before reading new ones.
             while self._queued_lines:
@@ -221,7 +273,7 @@ class RpcPluginServer:
             params = {}
         result = self._dispatch(method, params)
         self._send_response(rid, result)
-        return method == "plugin.shutdown"
+        return str(method) == "plugin.shutdown"
 
     def _dispatch(self, method: str, params: dict[str, Any]) -> Any:
         """Dispatch one request, returning a result or error dict."""

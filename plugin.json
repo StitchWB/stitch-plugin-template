@@ -63,9 +63,10 @@
             "label": "stitch-plugin-template.echo.btn",
             "command": "echo",
             "params": {
-              "text": {
-                "field": "echo-field"
-              }
+              "text": ""
+            },
+            "paramsFrom": {
+              "text": "echo-field"
             },
             "variant": "secondary"
           }

@@ -9,19 +9,13 @@ Replace this with your own schema as needed.
 
 from __future__ import annotations
 
-import sqlite3
 import uuid
-from pathlib import Path
 from typing import Any
 
-
-def _connect(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection with WAL mode for concurrent reads."""
-    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    return conn
+try:
+    from autoreg.plugin.helpers import connect_plugin_db
+except ImportError:
+    from ._vendor.plugin_helpers import connect_plugin_db
 
 
 def migrate(db_path: str) -> None:
@@ -30,7 +24,7 @@ def migrate(db_path: str) -> None:
     Replace with your own schema.  This example creates a simple
     ``items`` table.
     """
-    conn = _connect(db_path)
+    conn = connect_plugin_db(db_path)
     try:
         conn.execute(
             """
@@ -48,7 +42,7 @@ def migrate(db_path: str) -> None:
 
 def list_items(db_path: str) -> list[dict[str, Any]]:
     """Return all items from local storage."""
-    conn = _connect(db_path)
+    conn = connect_plugin_db(db_path)
     try:
         rows = conn.execute(
             "SELECT id, text FROM items ORDER BY created_at DESC"
@@ -61,7 +55,7 @@ def list_items(db_path: str) -> list[dict[str, Any]]:
 def create_item(db_path: str, text: str) -> dict[str, Any]:
     """Insert an item record and return it."""
     item_id = uuid.uuid4().hex[:12]
-    conn = _connect(db_path)
+    conn = connect_plugin_db(db_path)
     try:
         conn.execute(
             "INSERT INTO items (id, text) VALUES (?, ?)",

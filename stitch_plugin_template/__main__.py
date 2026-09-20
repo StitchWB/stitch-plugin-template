@@ -33,6 +33,11 @@ try:
 except ImportError:
     from ._vendor.rpc_server import RpcPluginServer
 
+try:
+    from autoreg.plugin.helpers import resolve_owner_id
+except ImportError:
+    from ._vendor.plugin_helpers import resolve_owner_id
+
 
 # ── State received in plugin.init handshake ───────────────────────────────
 
@@ -46,12 +51,6 @@ class _Ctx:
 
 
 ctx = _Ctx()
-
-
-def _uid(params: dict[str, Any]) -> int | None:
-    """Caller user id forwarded by the dual-format router (None = guest)."""
-    uid = params.get("caller_user_id")
-    return int(uid) if uid is not None else None
 
 
 def _handle_init(params: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +100,7 @@ def _handle_health_check(params: dict[str, Any]) -> dict[str, Any]:
 
 def _handle_echo(params: dict[str, Any]) -> dict[str, Any]:
     """Echo the ``text`` param back to the caller."""
-    _uid(params)  # caller identity available for per-user logic
+    resolve_owner_id(params)  # caller identity available for per-user logic
     return service.echo(str(params.get("text", "")))
 
 
