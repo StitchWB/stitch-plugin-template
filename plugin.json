@@ -16,6 +16,25 @@
   "capabilities": [],
   "outputs": [],
   "signature": "",
+  "description": "Stitch Plugin Template service plugin.",
+  "category": "productivity",
+  "status": "beta",
+  "icon": "🧩",
+  "features": [
+    {
+      "title": "Stitch Plugin Template commands",
+      "status": "beta"
+    }
+  ],
+  "changelog": [
+    {
+      "version": "0.1.0",
+      "date": "2026-09-26",
+      "changes": [
+        "Initial release"
+      ]
+    }
+  ],
   "generated_by": {
     "tool": "stitch_plugin_tools",
     "scaffold": 3
