@@ -13,8 +13,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install test deps
-        run: pip install pytest pytest-timeout
+      - name: Install dev deps
+        run: pip install -r requirements-dev.txt ruff
+      - name: Lint
+        run: ruff check . --extend-exclude "_vendor"
       - name: Validate manifest
         run: |
           python - <<'EOF'

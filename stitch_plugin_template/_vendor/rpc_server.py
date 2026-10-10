@@ -1,7 +1,7 @@
 # _vendored_from: autoreg/plugin/rpc.py — do not edit; regenerate via stitch_plugin_tools dev-install
 
 from __future__ import annotations
-_VENDOR_SOURCE_SHA256 = "c86af050570502d15a3f2d59f79b76f1fb5b271cfa82bcae96c1bdee1eb60f82"
+_VENDOR_SOURCE_SHA256 = "d85ddf56671da4afdddec93ffa5bc884e3699a46eee2664467c4a6170bfdeefe"
 
 import json
 import sys
@@ -81,6 +81,11 @@ class RpcPluginServer:
         # Lock guards the id counter from re-entrancy (signal/nested loop) tearing its read-modify-write.
         self._request_id_lock = threading.Lock()
         self._queued_lines: list[str] = []
+        # Single reader thread owns stdin; serve() and call_host() drain this buffer.
+        self._inbound: list[str | None] = []
+        self._inbound_cv = threading.Condition()
+        self._reader_eof = False
+        self._reader_thread: threading.Thread | None = None
         # Pinned at serve() start: a plugin's long action may swap sys.stdout process-wide.
         self._stdin: Any = None
         self._stdout: Any = None
@@ -130,15 +135,14 @@ class RpcPluginServer:
     ) -> Any:
         """Send a JSON-RPC request to the host and wait for the response.
 
-        Called from inside a command handler (single-threaded serve
-        loop).  Writes the request to stdout, then reads lines from
-        stdin until the matching response arrives.  Host→plugin requests
-        that arrive while waiting are queued for the serve loop to
-        process after the current handler returns.
+        Called from inside a command handler.  Writes the request to
+        stdout, then drains the reader thread's inbound buffer until the
+        matching response arrives.  Host→plugin requests that arrive while
+        waiting are queued for the serve loop to process after the current
+        handler returns.
 
-        Raises ``RpcTimeoutError`` if the response does not arrive
-        within *timeout* seconds, or ``RpcProtocolError`` if stdin
-        closes.
+        Raises ``RpcTimeoutError`` if the response does not arrive within
+        *timeout* seconds, or ``RpcProtocolError`` if stdin closes.
         """
         rid = self._next_request_id_locked()
         req = {"jsonrpc": _JSONRPC, "id": rid, "method": method,
@@ -147,12 +151,22 @@ class RpcPluginServer:
         out.write(json.dumps(req, ensure_ascii=False) + "\n")
         out.flush()
 
+        self._ensure_reader()
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            raw = self._input_stream().readline()
-            if not raw:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RpcTimeoutError(
+                    f"call_host {method} (id={rid}) timed out after {timeout}s"
+                )
+            status, raw = self._next_line(remaining)
+            if status == "eof":
                 raise RpcProtocolError(
                     "stdin closed while waiting for host response"
+                )
+            if status == "timeout":
+                raise RpcTimeoutError(
+                    f"call_host {method} (id={rid}) timed out after {timeout}s"
                 )
             line = raw.strip()
             if not line:
@@ -183,10 +197,6 @@ class RpcPluginServer:
 
             # Host→plugin request or unrelated line — queue for serve loop.
             self._queued_lines.append(line)
-
-        raise RpcTimeoutError(
-            f"call_host {method} (id={rid}) timed out after {timeout}s"
-        )
 
     def log(self, level: str, message: str, **extra: Any) -> None:
         """Write a structured log entry to stdout as a ``plugin.log`` notification.
@@ -228,11 +238,17 @@ class RpcPluginServer:
     def serve(self) -> None:
         """Main read-dispatch-write loop.  Exits on ``plugin.shutdown``.
 
-        Uses ``sys.stdin.readline()`` (not ``for line in sys.stdin``) so
-        that ``call_host`` can also read from stdin without the iterator's
-        internal buffering swallowing lines.  Before reading the next
-        line, any lines queued by ``call_host`` (host→plugin requests
-        that arrived while waiting for a host response) are processed.
+        Handlers are dispatched serially: a long-running ``plugin.call``
+        handler delays every subsequent request, including ``plugin.ping``
+        (host liveness).
+
+        A daemon reader thread owns stdin for the loop's lifetime and
+        feeds lines into ``_next_line``; both this loop and ``call_host``
+        drain that buffer, so ``call_host`` can enforce a real read
+        deadline (there is no ``select`` on Windows pipes).  Before
+        reading the next line, any lines queued by ``call_host``
+        (host→plugin requests that arrived while waiting for a host
+        response) are processed.
 
         Stdin/stdout are reconfigured to UTF-8 first: on Windows they
         default to the console codepage (cp1251 etc.), where the first
@@ -254,20 +270,78 @@ class RpcPluginServer:
                 reconfigure(encoding="utf-8")
             except (OSError, ValueError):
                 pass
+        self._ensure_reader()
         while True:
             # Process lines queued by call_host before reading new ones.
             while self._queued_lines:
                 queued = self._queued_lines.pop(0)
                 if self._process_line(queued):
                     return  # plugin.shutdown received
-            raw = self._input_stream().readline()
-            if not raw:
+            status, raw = self._next_line(None)
+            if status == "eof":
                 break
+            if status == "timeout":
+                continue
             line = raw.strip()
             if not line:
                 continue
             if self._process_line(line):
                 return  # plugin.shutdown received
+
+    def _ensure_reader(self) -> None:
+        """Start the stdin reader thread once (idempotent)."""
+        if self._reader_thread is not None and self._reader_thread.is_alive():
+            return
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop, name="rpc-server-reader", daemon=True
+        )
+        self._reader_thread.start()
+
+    def _reader_loop(self) -> None:
+        stream = self._input_stream()
+        try:
+            while True:
+                try:
+                    raw = stream.readline()
+                except (OSError, ValueError):
+                    raw = ""
+                if not raw:
+                    break
+                with self._inbound_cv:
+                    self._inbound.append(raw)
+                    self._inbound_cv.notify_all()
+        finally:
+            with self._inbound_cv:
+                self._reader_eof = True
+                self._inbound.append(None)
+                self._inbound_cv.notify_all()
+
+    def _next_line(self, timeout: float | None) -> tuple[str, str]:
+        """Return one inbound line as ``(status, line)``.
+
+        ``status`` is ``"line"``, ``"eof"``, or ``"timeout"`` — the
+        3-state split lets the serve loop (blocks) and ``call_host``
+        (bounded) tell a closed stream apart from an expired deadline.
+        Loops past spurious wakeups so a bounded caller never times out
+        before its deadline actually elapses.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._inbound_cv:
+            while not self._inbound and not self._reader_eof:
+                if deadline is None:
+                    self._inbound_cv.wait()
+                    continue
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return ("timeout", "")
+                self._inbound_cv.wait(remaining)
+            if self._inbound:
+                item = self._inbound.pop(0)
+            else:
+                return ("eof" if self._reader_eof else "timeout", "")
+        if item is None:
+            return ("eof", "")
+        return ("line", item)
 
     def _process_line(self, line: str) -> bool:
         """Process one line.  Returns True if ``plugin.shutdown`` was received."""
@@ -311,9 +385,15 @@ class RpcPluginServer:
             return _error(_ERR_INTERNAL, str(exc))
 
     def _send_response(self, rid: Any, result: Any) -> None:
-        """Write one JSON-RPC response line to the pinned output stream."""
-        if isinstance(result, dict) and "error" in result:
-            obj: dict[str, Any] = {"jsonrpc": _JSONRPC, "id": rid, "error": result["error"]}
+        """Write one JSON-RPC response line to the pinned output stream.
+
+        Only a result whose ``error`` is a dict carrying both ``code`` and
+        ``message`` (what ``_error`` builds) becomes a JSON-RPC error
+        envelope; any other ``error`` value ships as ``result``.
+        """
+        err = result.get("error") if isinstance(result, dict) else None
+        if isinstance(err, dict) and "code" in err and "message" in err:
+            obj: dict[str, Any] = {"jsonrpc": _JSONRPC, "id": rid, "error": err}
         else:
             obj = {"jsonrpc": _JSONRPC, "id": rid, "result": result}
         out = self._output_stream()
