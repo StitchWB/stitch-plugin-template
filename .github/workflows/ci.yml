@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install dev deps
-        run: pip install -r requirements-dev.txt ruff
+        run: pip install -r requirements-dev.txt
       - name: Lint
         run: ruff check . --extend-exclude "_vendor"
       - name: Validate manifest
