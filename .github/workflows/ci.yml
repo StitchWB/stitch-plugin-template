@@ -33,5 +33,17 @@ jobs:
               sys.exit("entry.module is required")
           print(f"manifest OK: {m['id']}@{m['version']}")
           EOF
+      - name: Classify
+        run: |
+          python - <<'EOF'
+          import json, sys
+          with open("plugin.json", encoding="utf-8") as f:
+              m = json.load(f)
+          # hub classify needs hub-only zone rules; the public CI asserts the lane
+          if m["kind"] == "service":
+              print(json.dumps({"class": "open-core", "channel": "public"}))
+          else:
+              sys.exit(f"kind={m['kind']!r} is not the public service lane - use the hub")
+          EOF
       - name: Run plugin tests
         run: python -m pytest tests/ -q --timeout=60
